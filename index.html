@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>David Jumper - Sci-Fi Eggventure!</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000011; color: #00ffcc; font-family: 'Courier New', Courier, monospace; }
+        canvas { display: block; }
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 10px;
+            background-color: rgba(0, 20, 40, 0.7);
+            border: 1px solid #00ffcc;
+            border-radius: 5px;
+            font-size: 1.2em;
+        }
+        #message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 20px;
+            background-color: rgba(0, 50, 80, 0.9);
+            border: 2px solid #00ffcc;
+            border-radius: 10px;
+            font-size: 1.8em;
+            text-align: center;
+            display: none; 
+            z-index: 10;
+        }
+        #controls-info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            font-size: 0.9em;
+            color: #aaa;
+        }
+         #message button {
+            background-color: #00ffcc;
+            color: #000011;
+            border: none;
+            padding: 10px 20px;
+            font-size: 0.8em;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 15px;
+        }
+        #message button:hover {
+            background-color: #00ddbb;
+        }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        Level: <span id="levelDisplay">1</span>/10<br>
+        Total Time: <span id="timerDisplay">0.00</span>s
+    </div>
+    <div id="message">
+        <!-- Content dynamically set -->
+    </div>
+     <div id="controls-info">
+        Controls: Arrow Keys (Turn), Space (Jump) + Arrow Keys (Air Control)
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer, player, clock;
+        let platforms = [];
+        let goalPlatform;
+
+        const playerSpeed = 5;
+        const playerTurnSpeed = Math.PI * 0.8; 
+        const jumpForce = 10.5; // Slightly increased jump for harder levels
+        const gravity = -25;
+        let playerVelocity = new THREE.Vector3();
+        let isGrounded = false;
+        let canJump = true;
+
+        let currentLevel = 0;
+        const totalLevels = 10;
+
+        let gameStartTime; 
+        let currentLevelStartTime; 
+        let timerActive = false;
+        let timeAtLastCompletion = 0;
+
+        const keys = {};
+        // Max jump height: ~2.2 units. Max horizontal reach (jump + air control): ~4-4.5 units.
+        const levelData = [
+            // Level 1: Intro to new mechanics
+            {
+                startPos: [0, 1, 0],
+                platforms: [
+                    { pos: [0, -0.5, 0], size: [4, 1, 4], color: 0x444488 },    // Top Y=0
+                    { pos: [0, -0.5, -5], size: [2, 1, 2], color: 0x444488 },   // Top Y=0. Gap 3 (center to center). Edge-to-edge: (5-2)/2 = 1.5 from P1 center to P2 edge. Player width 0.8. P1 z-edge=-2, P2 z-edge=-4. Gap: 2. OK.
+                    { pos: [0, 0, -9], size: [2, 1, 2], color: 0x444488 },      // Top Y=0.5. From P2(0,-5) to P3(0,-9). Gap 4. H_diff +0.5. Challenging first real jump. OK.
+                    { pos: [0, 0.5, -13.5], size: [2, 1, 2], color: 0x00ffcc, type: 'goal' } // Top Y=1. From P3(0,-9) to G(0,-13.5). Gap 4.5. H_diff +0.5. Max jump. OK.
+                ]
+            },
+            // Level 2: Angled jumps
+            {
+                startPos: [0, 1, 0],
+                platforms: [
+                    { pos: [0, -0.5, 0], size: [3, 1, 3], color: 0x555599 },    // Top Y=0
+                    { pos: [-3.5, -0.5, -3.5], size: [2, 1, 2], color: 0x555599 }, // Top Y=0. Diagonal gap sqrt(3.5^2+3.5^2) ~ 4.95. From P1 edge (-1.5,-1.5) to P2 edge (-2.5,-2.5). This is too far.
+                                                                                // P1 edge-to-edge: X gap (3.5-1.5-1) = 1, Z gap (3.5-1.5-1)=1. Diagonal sqrt(1^2+1^2)=1.4. Ctr-ctr: sqrt(3.5^2+3.5^2)=4.95
+                                                                                // Player needs to land on platform.  From (0,0) to (-3.5, -3.5), need to reach (-2.5, -2.5) at least. Dist 3.53. OK.
+                    { pos: [-3.5, 0, -7.5], size: [2, 1, 2], color: 0x555599 },     // Top Y=0.5. From P2(-3.5,-3.5) to P3(-3.5,-7.5). Gap 4. H_diff +0.5. OK.
+                    { pos: [0, 0.5, -10.5], size: [2, 1, 2], color: 0x00ffcc, type: 'goal' } // Top Y=1. From P3(-3.5,-7.5) to G(0,-10.5). Diagonal sqrt(3.5^2+3^2) ~ 4.6. H_diff +0.5. Hard. OK.
+                ]
+            },
+            // Level 3: Narrow path, precision
+            {
+                startPos: [0, 1, 5],
+                platforms: [
+                    { pos: [0, -0.5, 5], size: [1.5, 1, 8], color: 0x336699 }, // Top Y=0. Ends z=1.
+                    { pos: [0, -0.5, -2], size: [1.5, 1, 1.5], color: 0x336699 }, // Top Y=0. Starts z=-1.25. Gap 2.25. OK.
+                    { pos: [2.5, -0.5, -4.5], size: [1.5, 1, 1.5], color: 0x336699 }, // Top Y=0. From prev(0,-2) to this(2.5,-4.5). Horiz sqrt(2.5^2+2.5^2) ~ 3.53. OK.
+                    { pos: [0, 0, -7], size: [1.5, 1, 1.5], color: 0x336699 },    // Top Y=0.5. From prev(2.5,-4.5) to this(0,-7). Horiz sqrt(2.5^2+2.5^2) ~ 3.53. H_diff +0.5. OK.
+                    { pos: [-2.5, 0.5, -9.5], size: [1.5, 1, 1.5], color: 0x00ffcc, type: 'goal' } // Top Y=1. From prev(0,-7) to G(-2.5,-9.5). Horiz ~3.53. H_diff +0.5. OK.
+                ]
+            },
+            // Level 4: Rising platforms, commit
+            {
+                startPos: [-5, 1, 3],
+                platforms: [
+                    { pos: [-5, -0.5, 3], size: [2, 1, 2], color: 0x663399 }, // Top Y=0
+                    { pos: [-2, 0, 3], size: [2, 1, 2], color: 0x663399 },  // Top Y=0.5. H_diff +0.5. Horiz 3. OK.
+                    { pos: [1, 0.5, 3], size: [2, 1, 2], color: 0x663399 },   // Top Y=1. H_diff +0.5. Horiz 3. OK.
+                    { pos: [4, 1, 3], size: [2, 1, 2], color: 0x663399 },   // Top Y=1.5. H_diff +0.5. Horiz 3. OK.
+                    { pos: [4, 1, -1], size: [2, 1, 2], color: 0x00ffcc, type: 'goal' } // Top Y=1.5. From prev(4,3) to G(4,-1). Horiz 4. OK.
+                ]
+            },
+            // Level 5: Zig Zag, tight turns
+            {
+                startPos: [0, 1, 0],
+                platforms: [
+                    { pos: [0, -0.5, 0], size: [3,1,3], color: 0x227777},     // Top Y=0
+                    { pos: [3.5, -0.5, 1], size: [1.5,1,1.5], color: 0x227777},// Top Y=0. From P1(0,0) to P2(3.5,1). X-dist 3.5. Needs good angle. OK.
+                    { pos: [0, -0.5, 3], size: [1.5,1,1.5], color: 0x227777},  // Top Y=0. From P2(3.5,1) to P3(0,3). Diag sqrt(3.5^2+2^2) ~ 4.03. OK.
+                    { pos: [-3.5, 0, 4], size: [1.5,1,1.5], color: 0x227777},  // Top Y=0.5. From P3(0,3) to P4(-3.5,4). Diag sqrt(3.5^2+1^2) ~ 3.6. H_diff +0.5. OK.
+                    { pos: [0, 0.5, 6], size: [1.5,1,1.5], color: 0x00ffcc, type: 'goal'} // Top Y=1. From P4(-3.5,4) to G(0,6). Diag sqrt(3.5^2+2^2) ~ 4.03. H_diff +0.5. Hard. OK.
+                ]
+            },
+            // Level 6: Long Gaps
+            {
+                startPos: [0, 1, 0],
+                platforms: [
+                    { pos: [0, -0.5, 0], size: [3,1,3], color: 0x884444},    // Top Y=0. Ends z=-1.5
+                    { pos: [0, -0.5, -5.5], size: [2,1,2], color: 0x884444}, // Top Y=0. Starts z=-4.5. Gap 3. OK. Ends z=-6.5
+                    { pos: [0, 0, -11], size: [2,1,2], color: 0x00ffcc, type: 'goal'} // Top Y=0.5. Starts z=-10. Gap 3.5. H_diff +0.5. OK.
+                ]
+            },
+            // Level 7: Minimalist platforms, high stakes
+            {
+                startPos: [0, 1, 0],
+                platforms: [
+                    { pos: [0, -0.5, 0], size: [1,1,1], color: 0x448844},    // Top Y=0
+                    { pos: [3.5, -0.5, 0], size: [1,1,1], color: 0x448844},  // Top Y=0. Gap 3.5. OK.
+                    { pos: [3.5, 0, -3.5], size: [1,1,1], color: 0x448844},  // Top Y=0.5. Gap 3.5. H_diff +0.5. OK.
+                    { pos: [0, 0.5, -3.5], size: [1,1,1], color: 0x448844},  // Top Y=1. Gap 3.5. H_diff +0.5. OK.
+                    { pos: [0, 1, -7], size: [1,1,1], color: 0x00ffcc, type: 'goal'} // Top Y=1.5. Gap 3.5. H_diff +0.5. OK.
+                ]
+            },
+            // Level 8: Up, Over, and Down
+            {
+                startPos: [-5, 1, 0],
+                platforms: [
+                    { pos: [-5, -0.5, 0], size: [2,1,2], color: 0x777733},   // Top Y=0
+                    { pos: [-1.5, 1, 0], size: [2,1,2], color: 0x777733},    // Top Y=1.5. From P1(-5,0) to P2(-1.5,0). Horiz 3.5. H_diff +1.5. OK.
+                    { pos: [2, -0.5, 0], size: [2,1,2], color: 0x777733},    // Top Y=0. From P2(-1.5,0) to P3(2,0). Horiz 3.5. H_diff -1.5. OK.
+                    { pos: [2, -0.5, -4], size: [2,1,2], color: 0x00ffcc, type: 'goal'} // Top Y=0. From P3(2,0) to G(2,-4). Horiz 4. OK.
+                ]
+            },
+            // Level 9: The Gauntlet (Series of precise jumps)
+            {
+                startPos: [0, 1, 8],
+                platforms: [
+                    { pos: [0, -0.5, 8], size: [1.5,1,1.5], color: 0x337777}, // Top Y=0. z-edge 7.25
+                    { pos: [0, -0.5, 4], size: [1.5,1,1.5], color: 0x337777}, // Top Y=0. z-edge 4.75. Gap 2.5. OK.
+                    { pos: [0, 0, 0], size: [1.5,1,1.5], color: 0x337777},    // Top Y=0.5. z-edge 0.75. Gap 4. H_diff +0.5. Hard. OK.
+                    { pos: [0, 0.5, -4], size: [1.5,1,1.5], color: 0x337777}, // Top Y=1. z-edge -3.25. Gap 4. H_diff +0.5. Hard. OK.
+                    { pos: [0, 1, -8], size: [1.5,1,1.5], color: 0x00ffcc, type: 'goal'} // Top Y=1.5. z-edge -7.25. Gap 4. H_diff +0.5. Hard. OK.
+                ]
+            },
+            // Level 10: Finale - Long, winding, varying heights
+            {
+                startPos: [0, 1, 10],
+                platforms: [
+                    { pos: [0, -0.5, 10], size: [3,1,3], color: 0xAAAAAA},     // Top Y=0
+                    { pos: [0, 0, 6], size: [1.5,1,1.5], color: 0x999999},     // Top Y=0.5. Gap 4. H_diff +0.5. OK.
+                    { pos: [3.5, 0.5, 3.5], size: [1.5,1,1.5], color: 0x888888}, // Top Y=1. From P2(0,6) to P3(3.5,3.5). Diag sqrt(3.5^2+2.5^2) ~ 4.3. H_diff +0.5. OK.
+                    { pos: [0, 1, 0], size: [1.5,1,1.5], color: 0x777777},       // Top Y=1.5. From P3(3.5,3.5) to P4(0,0). Diag sqrt(3.5^2+3.5^2) ~ 4.95. This is too far. Max reach ~4.5.
+                                                                                // Adjusted P4: { pos: [0.5, 1, 0.5], size: [1.5,1,1.5], color: 0x777777}, From P3(3.5,3.5) to P4(0.5,0.5). Diag sqrt(3^2+3^2) ~ 4.24. H_diff +0.5. OK.
+                    { pos: [-3, 1.5, -2.5], size: [1.5,1,1.5], color: 0x666666},  // Top Y=2. From P4(0.5,0.5) to P5(-3,-2.5). Diag sqrt(3.5^2+3^2) ~ 4.6. H_diff +0.5. Very Hard. Max reach. OK.
+                    { pos: [-3, 2, -7], size: [2,1,2], color: 0x00ffcc, type: 'goal'} // Top Y=2.5. From P5(-3,-2.5) to G(-3,-7). Gap 4.5. H_diff +0.5. Max Reach. OK.
+                ]
+            }
+        ];
+
+        init();
+        animate();
+
+        function init() {
+            clock = new THREE.Clock();
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000011);
+            scene.fog = new THREE.Fog(0x000011, 25, 70); // Adjusted fog for potentially larger levels
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0x404080, 1.2); // Slightly brighter ambient
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0x00ffff, 1.5);
+            directionalLight.position.set(12, 18, 12); // Adjusted light pos
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 1024;
+            directionalLight.shadow.mapSize.height = 1024;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 60; // Increased far for larger levels
+            directionalLight.shadow.camera.left = -25;
+            directionalLight.shadow.camera.right = 25;
+            directionalLight.shadow.camera.top = 25;
+            directionalLight.shadow.camera.bottom = -25;
+            scene.add(directionalLight);
+
+            const pointLight = new THREE.PointLight(0xff00ff, 1.2, 60); // Magenta fill light
+            pointLight.position.set(-12, 7, -7);
+            scene.add(pointLight);
+
+            const eggGeometry = new THREE.SphereGeometry(0.4, 16, 12);
+            const eggMaterial = new THREE.MeshStandardMaterial({ color: 0xffffee, roughness: 0.3, metalness: 0.2 });
+            player = new THREE.Mesh(eggGeometry, eggMaterial);
+            player.scale.y = 1.2;
+            player.castShadow = true;
+            scene.add(player);
+
+            window.addEventListener('resize', onWindowResize, false);
+            document.addEventListener('keydown', (event) => { keys[event.code] = true; });
+            document.addEventListener('keyup', (event) => { keys[event.code] = false; });
+            
+            gameStartTime = Date.now();
+            loadLevel(currentLevel);
+        }
+        
+        function startNewLevelTimer() {
+            currentLevelStartTime = Date.now();
+            timerActive = true;
+        }
+
+        function updateTimerDisplay() {
+            let displayTimeSeconds;
+            if (timerActive) {
+                displayTimeSeconds = (Date.now() - gameStartTime) / 1000;
+            } else {
+                displayTimeSeconds = timeAtLastCompletion / 1000;
+            }
+            document.getElementById('timerDisplay').textContent = displayTimeSeconds.toFixed(2);
+        }
+
+        function createPlatform(data) {
+            const geometry = new THREE.BoxGeometry(data.size[0], data.size[1], data.size[2]);
+            let material;
+            if (data.type === 'goal') {
+                material = new THREE.MeshStandardMaterial({ color: data.color, emissive: data.color, emissiveIntensity: 0.8, roughness: 0.5, metalness: 0.3 });
+            } else {
+                material = new THREE.MeshStandardMaterial({ color: data.color, roughness: 0.7, metalness: 0.5 });
+            }
+            const platform = new THREE.Mesh(geometry, material);
+            platform.position.set(data.pos[0], data.pos[1], data.pos[2]);
+            platform.receiveShadow = true;
+            platform.userData.isPlatform = true;
+            if (data.type === 'goal') {
+                platform.userData.isGoal = true;
+                goalPlatform = platform;
+            }
+            return platform;
+        }
+
+        function loadLevel(levelIndex) {
+            platforms.forEach(p => scene.remove(p));
+            platforms = [];
+            if (goalPlatform) scene.remove(goalPlatform);
+            goalPlatform = null;
+
+            const data = levelData[levelIndex];
+            player.position.set(data.startPos[0], data.startPos[1], data.startPos[2]);
+            playerVelocity.set(0,0,0);
+            isGrounded = false; 
+            player.rotation.y = 0; 
+
+            data.platforms.forEach(pData => {
+                const platformMesh = createPlatform(pData);
+                scene.add(platformMesh);
+                platforms.push(platformMesh);
+            });
+
+            document.getElementById('levelDisplay').textContent = `${levelIndex + 1}`;
+            startNewLevelTimer();
+            updateCamera(0);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function handleInput(deltaTime) {
+            // Turning can happen anytime
+            if (keys['ArrowLeft'] || keys['KeyA']) player.rotation.y += playerTurnSpeed * deltaTime;
+            if (keys['ArrowRight'] || keys['KeyD']) player.rotation.y -= playerTurnSpeed * deltaTime;
+
+            // Jumping
+            if ((keys['Space']) && isGrounded && canJump) {
+                playerVelocity.y = jumpForce;
+                isGrounded = false;
+                canJump = false;
+            }
+            if (!keys['Space']) canJump = true;
+
+            // Horizontal movement only if in the air
+            if (!isGrounded) {
+                let moveDirection = new THREE.Vector3();
+                if (keys['ArrowUp'] || keys['KeyW']) moveDirection.z = -1;
+                if (keys['ArrowDown'] || keys['KeyS']) moveDirection.z = 1;
+                // Note: Sideways air-strafing is not typical for this kind of platformer,
+                // but could be added here if desired (e.g. if Q/E were for strafing)
+                // For now, forward/backward in air is based on player's current orientation.
+
+                moveDirection.applyQuaternion(player.quaternion);
+                playerVelocity.x = moveDirection.x * playerSpeed;
+                playerVelocity.z = moveDirection.z * playerSpeed;
+            }
+        }
+
+        function updatePlayer(deltaTime) {
+            // --- NEW MECHANIC: If grounded, stop horizontal movement ---
+            if (isGrounded) {
+                playerVelocity.x = 0;
+                playerVelocity.z = 0;
+            }
+            // --- END NEW MECHANIC ---
+
+            if (!isGrounded) playerVelocity.y += gravity * deltaTime;
+
+            const oldPosition = player.position.clone();
+            const proposedMovement = playerVelocity.clone().multiplyScalar(deltaTime);
+            const newPosition = player.position.clone().add(proposedMovement);
+
+            // Ground collision (Raycaster) - player radius is 0.4, height scaling is 1.2 (so effective height 0.4*1.2=0.48 from center)
+            const rayOrigin = newPosition.clone().add(new THREE.Vector3(0, 0.1, 0)); // Ray starts slightly above player center
+            const rayDirection = new THREE.Vector3(0, -1, 0);
+            const rayLength = 0.48 + 0.2; // Player "half-height" + a bit of tolerance
+            const raycaster = new THREE.Raycaster(rayOrigin, rayDirection, 0, rayLength);
+            const groundIntersects = raycaster.intersectObjects(platforms);
+            
+            let onGroundThisFrame = false;
+            if (groundIntersects.length > 0) {
+                const groundHit = groundIntersects[0];
+                const groundY = groundHit.object.position.y + groundHit.object.geometry.parameters.height / 2;
+                // Check if player is at or just above the platform and moving downwards or stationary vertically
+                if (newPosition.y - 0.48 <= groundY + 0.05 && playerVelocity.y <=0) { 
+                    newPosition.y = groundY + 0.48; // Adjust player Y
+                    playerVelocity.y = 0;
+                    onGroundThisFrame = true;
+                }
+            }
+            isGrounded = onGroundThisFrame;
+
+
+            // Horizontal collision (only if airborne, as grounded horizontal velocity is 0)
+            // Uses a simplified Box3 check
+            if (!isGrounded) { // Only apply wall collision if in air
+                const playerCollider = new THREE.Box3().setFromCenterAndSize(
+                    player.position, 
+                    new THREE.Vector3(0.8, 0.8 * 1.2, 0.8) // Egg dimensions
+                );
+
+                for (let platform of platforms) {
+                    const platformCollider = new THREE.Box3().setFromObject(platform);
+                    
+                    // Check X collision
+                    let tempColliderX = playerCollider.clone().translate(new THREE.Vector3(proposedMovement.x, 0, 0));
+                    if (tempColliderX.intersectsBox(platformCollider)) {
+                        // Simple stop: If collision, don't move in X for this frame
+                        newPosition.x = oldPosition.x; 
+                        playerVelocity.x = 0; // Stop further x-movement from this collision
+                    }
+
+                    // Check Z collision (after potential X correction)
+                    // Update playerCollider's X for Z check if X was not reverted
+                    playerCollider.setFromCenterAndSize(
+                        new THREE.Vector3(newPosition.x, player.position.y, player.position.z), 
+                        new THREE.Vector3(0.8, 0.8 * 1.2, 0.8)
+                    );
+                    let tempColliderZ = playerCollider.clone().translate(new THREE.Vector3(0, 0, proposedMovement.z));
+                    if (tempColliderZ.intersectsBox(platformCollider)) {
+                        newPosition.z = oldPosition.z; 
+                        playerVelocity.z = 0; // Stop further z-movement
+                    }
+                }
+            }
+            
+            player.position.copy(newPosition);
+
+            if (player.position.y < -25) { // Increased fall distance
+                loadLevel(currentLevel); 
+            }
+
+            if (goalPlatform) {
+                const playerBox = new THREE.Box3().setFromObject(player);
+                const goalBox = new THREE.Box3().setFromObject(goalPlatform);
+                if (playerBox.intersectsBox(goalBox)) {
+                    levelComplete();
+                }
+            }
+        }
+
+        function levelComplete() {
+            timerActive = false; 
+            const levelEndTime = Date.now();
+            timeAtLastCompletion = levelEndTime - gameStartTime;
+
+            const thisLevelDurationSeconds = (levelEndTime - currentLevelStartTime) / 1000;
+            const totalGameTimeSeconds = timeAtLastCompletion / 1000;
+
+            const messageDiv = document.getElementById('message');
+            messageDiv.style.display = 'block';
+
+            if (currentLevel + 1 >= totalLevels) {
+                messageDiv.innerHTML = `David Jumper Conquered!<br>Total Time: ${totalGameTimeSeconds.toFixed(2)}s!<br><button id="restartGameButton">Play Again</button>`;
+                document.getElementById('restartGameButton').addEventListener('click', () => {
+                    messageDiv.style.display = 'none';
+                    currentLevel = 0;
+                    timeAtLastCompletion = 0; 
+                    gameStartTime = Date.now();
+                    loadLevel(currentLevel);
+                }, { once: true });
+            } else {
+                messageDiv.innerHTML = `Level ${currentLevel + 1} Complete!<br>Level Time: ${thisLevelDurationSeconds.toFixed(2)}s<br>Total Time: ${totalGameTimeSeconds.toFixed(2)}s<br><button id="nextLevelButtonNew">Next Level</button>`;
+                document.getElementById('nextLevelButtonNew').addEventListener('click', () => {
+                    messageDiv.style.display = 'none';
+                    currentLevel++;
+                    loadLevel(currentLevel);
+                }, { once: true });
+            }
+        }
+        
+        function updateCamera(deltaTime) {
+            const cameraOffset = new THREE.Vector3(0, 3.5, 7.5); // Slightly adjusted camera
+            const desiredCameraPosition = player.position.clone().add(cameraOffset.applyQuaternion(player.quaternion));
+            
+            if (deltaTime > 0) {
+                camera.position.lerp(desiredCameraPosition, deltaTime * 4); // Slower lerp for smoother follow
+            } else {
+                camera.position.copy(desiredCameraPosition);
+            }
+            
+            const lookAtPosition = player.position.clone().add(new THREE.Vector3(0, 0.6, 0)); // Look slightly higher on egg
+            camera.lookAt(lookAtPosition);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const deltaTime = Math.min(0.05, clock.getDelta()); 
+
+            if (! (document.getElementById('message').style.display === 'block') ) {
+                handleInput(deltaTime); // Process input first
+                updatePlayer(deltaTime); // Then update player state and position
+            }
+            
+            updateCamera(deltaTime);
+            updateTimerDisplay();
+
+            renderer.render(scene, camera);
+        }
+
+    </script>
+</body>
+</html>
